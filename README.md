@@ -8,8 +8,8 @@ CToken、CErc20 和 CEther
   Compound cTokens，是独立的借贷合约。CToken 包含核心逻辑，CErc20 和 CEther 分别为 Erc20 代币和以太币添加公共接口。
   每个 CToken 都被分配了一个利率和风险模型（参见 InterestRateModel 和 Comptroller 部分），并允许账户*铸造*（供应资本）、*赎回*（提取资本）、*借入*和*偿还借入*。每个 CToken 都是符合 ERC-20 标准的代币，其中余额代表市场所有权。
 
-Comptroller
-  风险模型合同，它验证允许的用户操作并在不符合某些风险参数时禁止操作。例如，审计员强制每个借款用户必须在所有 cToken 中保持足够的抵押品余额。
+Comptroller-审计员
+  风险模型合同 ，它验证允许的用户操作并在不符合某些风险参数时禁止操作。例如，审计员强制每个借款用户必须在所有 cToken 中保持足够的抵押品余额。
 
   Updating the Comptroller
     遵循现有的命名模式 (ControllerGX)
@@ -27,7 +27,7 @@ Governor Alpha
   Compound 时间锁合约的管理员。Comp 代币的持有者可以创建提案并对其进行投票，这些提案将排队进入 Compound 时间锁，然后对 Compound cToken 和 Comptroller 合约产生影响。将来可能会用测试版替换此合约。
 
 InterestRateModel
-  定义利率模型的合同。这些模型根据给定市场的当前利用率（即提供的资产中有多少是流动的与借来的）通过算法确定利率。
+  定义利率模型的合同。 这些模型根据给定市场的当前利用率（即提供的资产中有多少是流动的与借来的）通过算法确定利率。
 
 Careful Math
   Library for safe math operations.

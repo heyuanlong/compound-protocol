@@ -22,6 +22,10 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
      * @param name_ EIP-20 name of this token
      * @param symbol_ EIP-20 symbol of this token
      * @param decimals_ EIP-20 decimal precision of this token
+
+        审计员合约
+        定义利率模型的合约
+        初始汇率
      */
     function initialize(ComptrollerInterface comptroller_,
                         InterestRateModel interestRateModel_,
@@ -30,13 +34,17 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
                         string memory symbol_,
                         uint8 decimals_) public {
         require(msg.sender == admin, "only admin may initialize the market");
+
+        //只能初始化一次
         require(accrualBlockNumber == 0 && borrowIndex == 0, "market may only be initialized once");
 
         // Set initial exchange rate
+        // 设置初始汇率
         initialExchangeRateMantissa = initialExchangeRateMantissa_;
         require(initialExchangeRateMantissa > 0, "initial exchange rate must be greater than zero.");
 
         // Set the comptroller
+        // 设置审计员合约
         uint err = _setComptroller(comptroller_);
         require(err == NO_ERROR, "setting comptroller failed");
 
@@ -45,6 +53,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         borrowIndex = mantissaOne;
 
         // Set the interest rate model (depends on block number / borrow index)
+        //初始化利率模式合约
         err = _setInterestRateModelFresh(interestRateModel_);
         require(err == NO_ERROR, "setting interest rate model failed");
 
@@ -56,23 +65,14 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         _notEntered = true;
     }
 
-    /**
-     * @notice Transfer `tokens` tokens from `src` to `dst` by `spender`
-     * @dev Called by both `transfer` and `transferFrom` internally
-     * @param spender The address of the account performing the transfer
-     * @param src The address of the source account
-     * @param dst The address of the destination account
-     * @param tokens The number of tokens to transfer
-     * @return 0 if the transfer succeeded, else revert
-     */
     function transferTokens(address spender, address src, address dst, uint tokens) internal returns (uint) {
-        /* Fail if transfer not allowed */
+
+        // 审计员检查是否允许转账
         uint allowed = comptroller.transferAllowed(address(this), src, dst, tokens);
         if (allowed != 0) {
             revert TransferComptrollerRejection(allowed);
         }
 
-        /* Do not allow self-transfers */
         if (src == dst) {
             revert TransferNotAllowed();
         }
@@ -102,44 +102,18 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             transferAllowances[src][spender] = allowanceNew;
         }
 
-        /* We emit a Transfer event */
         emit Transfer(src, dst, tokens);
-
-        // unused function
-        // comptroller.transferVerify(address(this), src, dst, tokens);
-
         return NO_ERROR;
     }
 
-    /**
-     * @notice Transfer `amount` tokens from `msg.sender` to `dst`
-     * @param dst The address of the destination account
-     * @param amount The number of tokens to transfer
-     * @return Whether or not the transfer succeeded
-     */
     function transfer(address dst, uint256 amount) override external nonReentrant returns (bool) {
         return transferTokens(msg.sender, msg.sender, dst, amount) == NO_ERROR;
     }
 
-    /**
-     * @notice Transfer `amount` tokens from `src` to `dst`
-     * @param src The address of the source account
-     * @param dst The address of the destination account
-     * @param amount The number of tokens to transfer
-     * @return Whether or not the transfer succeeded
-     */
     function transferFrom(address src, address dst, uint256 amount) override external nonReentrant returns (bool) {
         return transferTokens(msg.sender, src, dst, amount) == NO_ERROR;
     }
 
-    /**
-     * @notice Approve `spender` to transfer up to `amount` from `src`
-     * @dev This will overwrite the approval amount for `spender`
-     *  and is subject to issues noted [here](https://eips.ethereum.org/EIPS/eip-20#approve)
-     * @param spender The address of the account which may transfer tokens
-     * @param amount The number of tokens that are approved (uint256.max means infinite)
-     * @return Whether or not the approval succeeded
-     */
     function approve(address spender, uint256 amount) override external returns (bool) {
         address src = msg.sender;
         transferAllowances[src][spender] = amount;
@@ -147,42 +121,26 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return true;
     }
 
-    /**
-     * @notice Get the current allowance from `owner` for `spender`
-     * @param owner The address of the account which owns the tokens to be spent
-     * @param spender The address of the account which may transfer tokens
-     * @return The number of tokens allowed to be spent (-1 means infinite)
-     */
     function allowance(address owner, address spender) override external view returns (uint256) {
         return transferAllowances[owner][spender];
     }
 
-    /**
-     * @notice Get the token balance of the `owner`
-     * @param owner The address of the account to query
-     * @return The number of tokens owned by `owner`
-     */
     function balanceOf(address owner) override external view returns (uint256) {
         return accountTokens[owner];
     }
 
-    /**
-     * @notice Get the underlying balance of the `owner`
-     * @dev This also accrues interest in a transaction
-     * @param owner The address of the account to query
-     * @return The amount of underlying owned by `owner`
-     */
+    //我的标的资产
     function balanceOfUnderlying(address owner) override external returns (uint) {
         Exp memory exchangeRate = Exp({mantissa: exchangeRateCurrent()});
         return mul_ScalarTruncate(exchangeRate, accountTokens[owner]);
     }
 
-    /**
-     * @notice Get a snapshot of the account's balances, and the cached exchange rate
-     * @dev This is used by comptroller to more efficiently perform liquidity checks.
-     * @param account Address of the account to snapshot
-     * @return (possible error, token balance, borrow balance, exchange rate mantissa)
-     */
+    /*
+    获取帐户余额的快照，以及缓存的汇率
+    这是审计员用来更有效地执行流动性检查。
+    * @param account要快照的帐户地址
+    * @return(可能的错误，token余额，借款余额，汇率尾数)
+    */
     function getAccountSnapshot(address account) override external view returns (uint, uint, uint, uint) {
         return (
             NO_ERROR,
@@ -192,26 +150,16 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         );
     }
 
-    /**
-     * @dev Function to simply retrieve block number
-     *  This exists mainly for inheriting test contracts to stub this result.
-     */
     function getBlockNumber() virtual internal view returns (uint) {
         return block.number;
     }
 
-    /**
-     * @notice Returns the current per-block borrow interest rate for this cToken
-     * @return The borrow interest rate per block, scaled by 1e18
-     */
+    //返回该cToken当前的每块借款利率
     function borrowRatePerBlock() override external view returns (uint) {
         return interestRateModel.getBorrowRate(getCashPrior(), totalBorrows, totalReserves);
     }
 
-    /**
-     * @notice Returns the current per-block supply interest rate for this cToken
-     * @return The supply interest rate per block, scaled by 1e18
-     */
+    //返回该cToken的当前每块供应利率
     function supplyRatePerBlock() override external view returns (uint) {
         return interestRateModel.getSupplyRate(getCashPrior(), totalBorrows, totalReserves, reserveFactorMantissa);
     }
@@ -898,6 +846,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
       * @dev Admin function to set a new comptroller
       * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
       */
+      // 设置审计员合约
     function _setComptroller(ComptrollerInterface newComptroller) override public returns (uint) {
         // Check caller is admin
         if (msg.sender != admin) {
@@ -1089,31 +1038,23 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
      * @param newInterestRateModel the new interest rate model to use
      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
      */
+     // 通知更新利率模型(*要求新的利息应计)
     function _setInterestRateModelFresh(InterestRateModel newInterestRateModel) internal returns (uint) {
 
-        // Used to store old model for use in the event that is emitted on success
         InterestRateModel oldInterestRateModel;
-
-        // Check caller is admin
         if (msg.sender != admin) {
             revert SetInterestRateModelOwnerCheck();
         }
 
         // We fail gracefully unless market's block number equals current block number
+        //要求市场的区块号等于当前区块号，否则我们会失败
         if (accrualBlockNumber != getBlockNumber()) {
             revert SetInterestRateModelFreshCheck();
         }
 
-        // Track the market's current interest rate model
         oldInterestRateModel = interestRateModel;
-
-        // Ensure invoke newInterestRateModel.isInterestRateModel() returns true
         require(newInterestRateModel.isInterestRateModel(), "marker method returned false");
-
-        // Set the interest rate model to newInterestRateModel
         interestRateModel = newInterestRateModel;
-
-        // Emit NewMarketInterestRateModel(oldInterestRateModel, newInterestRateModel)
         emit NewMarketInterestRateModel(oldInterestRateModel, newInterestRateModel);
 
         return NO_ERROR;
