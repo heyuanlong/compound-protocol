@@ -78,6 +78,7 @@ contract CTokenStorage {
 
     /**
      * @notice Total amount of reserves of the underlying held in this market
+     本市场所持有的标的准备金总额
      */
     uint public totalReserves;
 

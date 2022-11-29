@@ -164,94 +164,80 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return interestRateModel.getSupplyRate(getCashPrior(), totalBorrows, totalReserves, reserveFactorMantissa);
     }
 
-    /**
-     * @notice Returns the current total borrows plus accrued interest
-     * @return The total borrows with interest
-     */
+    //返回当前借款总额加上应计利息
+    //包括利息的借款总额
     function totalBorrowsCurrent() override external nonReentrant returns (uint) {
         accrueInterest();
         return totalBorrows;
     }
 
-    /**
-     * @notice Accrue interest to updated borrowIndex and then calculate account's borrow balance using the updated borrowIndex
-     * @param account The address whose balance should be calculated after updating borrowIndex
-     * @return The calculated balance
+    /*
+        * @应计利息,到更新的borrowIndex，然后使用更新的borrowIndex计算帐户的借款余额
+        * @param account更新borrowIndex后需要计算余额的地址
+        * @return计算的余额
      */
     function borrowBalanceCurrent(address account) override external nonReentrant returns (uint) {
         accrueInterest();
         return borrowBalanceStored(account);
     }
 
-    /**
-     * @notice Return the borrow balance of account based on stored data
-     * @param account The address whose balance should be calculated
-     * @return The calculated balance
+    /*
+        * @notice根据已存储数据返回账户借款余额
+        * @param account需要计算余额的地址
+        * @return计算的余额
      */
     function borrowBalanceStored(address account) override public view returns (uint) {
         return borrowBalanceStoredInternal(account);
     }
 
-    /**
-     * @notice Return the borrow balance of account based on stored data
-     * @param account The address whose balance should be calculated
-     * @return (error code, the calculated balance or 0 if error code is non-zero)
+    /*
+        * 根据已存储数据返回账户借款余额
+        * @param account需要计算余额的地址
+        * @return(错误码，计算的余额，如果错误码非零则为0)
      */
     function borrowBalanceStoredInternal(address account) internal view returns (uint) {
         /* Get borrowBalance and borrowIndex */
         BorrowSnapshot storage borrowSnapshot = accountBorrows[account];
 
-        /* If borrowBalance = 0 then borrowIndex is likely also 0.
-         * Rather than failing the calculation with a division by 0, we immediately return 0 in this case.
-         */
+        //如果borrowBalance = 0，则borrowIndex也可能为0。
+        //在这种情况下，我们不会因为除以0而导致计算失败，而是立即返回0。
         if (borrowSnapshot.principal == 0) {
             return 0;
         }
 
-        /* Calculate new borrow balance using the interest index:
+        /* 使用利率指数计算新借款余额:
          *  recentBorrowBalance = borrower.borrowBalance * market.borrowIndex / borrower.borrowIndex
          */
         uint principalTimesIndex = borrowSnapshot.principal * borrowIndex;
         return principalTimesIndex / borrowSnapshot.interestIndex;
     }
 
-    /**
-     * @notice Accrue interest then return the up-to-date exchange rate
-     * @return Calculated exchange rate scaled by 1e18
+    /*
+        应计利息，然后返回最新的汇率
+        计算后的汇率乘以1e18
      */
     function exchangeRateCurrent() override public nonReentrant returns (uint) {
         accrueInterest();
         return exchangeRateStored();
     }
 
-    /**
-     * @notice Calculates the exchange rate from the underlying to the CToken
-     * @dev This function does not accrue interest before calculating the exchange rate
-     * @return Calculated exchange rate scaled by 1e18
-     */
+    //计算标的资产到ctoken的汇率
+    //@dev此函数在计算汇率之前不产生利息
     function exchangeRateStored() override public view returns (uint) {
         return exchangeRateStoredInternal();
     }
 
-    /**
-     * @notice Calculates the exchange rate from the underlying to the CToken
-     * @dev This function does not accrue interest before calculating the exchange rate
-     * @return calculated exchange rate scaled by 1e18
-     */
+    //计算标的资产到ctoken的汇率
+    //@dev此函数在计算汇率之前不产生利息
     function exchangeRateStoredInternal() virtual internal view returns (uint) {
         uint _totalSupply = totalSupply;
         if (_totalSupply == 0) {
-            /*
-             * If there are no tokens minted:
-             *  exchangeRate = initialExchangeRate
-             */
+            //If there are no tokens minted:exchangeRate = initialExchangeRate
             return initialExchangeRateMantissa;
         } else {
-            /*
-             * Otherwise:
-             *  exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply
-             */
-            uint totalCash = getCashPrior();
+            // 汇率 = (现存标的资产+借出去的标的资产+标的资产准备金) / ctoken总量
+            // exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply
+            uint totalCash = getCashPrior(); 
             uint cashPlusBorrowsMinusReserves = totalCash + totalBorrows - totalReserves;
             uint exchangeRate = cashPlusBorrowsMinusReserves * expScale / _totalSupply;
 
@@ -263,6 +249,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
      * @notice Get cash balance of this cToken in the underlying asset
      * @return The quantity of underlying asset owned by this contract
      */
+     //在子合约里重写
     function getCash() override external view returns (uint) {
         return getCashPrior();
     }
