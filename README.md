@@ -77,3 +77,90 @@ yarn test
   要运行代码覆盖率，请运行：
 
 
+
+
+兑换率是怎么增加的？
+  兑换率依照以下数据做计算(以Compound DAI为例子)：
+  totalCash =放入智能合约，但还没被借走DAI的总数量
+  totalBorrows =所有借款人，所应偿还DAI的总数量(含本金利息)
+  totalReserves =保留金总数量(借款人所应支付的利息，部分被视为保留金)
+  totalSupply =所有放贷人所得到cDAI的总数量
+
+  exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply
+
+
+
+借款年利率
+  在Compound 利率模型里，会计算借款年利率，这个利率会受到以下因素影响：
+
+  基础利率(base rate)
+  使用率(utilization rate) = totalBorrows/(totalCash + totalBorrows)
+  加给利率(multiplier)
+  借款年利率= 基础利率+ (使用率x 加给利率)
+
+  以Compound DAI为例，基础利率= 5%，加给利率= 12%，若以目前当下的使用率= 62.13%来计算：
+  借款年利率 = 5% + (12% x 0.6213) = 12.4556%
+
+
+放贷年利率
+  放贷年利率同样会受到以下因素影响：
+
+  借款年利率(borrow rate) (上述所计算出来的)
+  使用率(utilization rate)
+  保留利率(reserve factor)
+  放贷年利率≈ 借款年利率x 使用率x (1 – 保留利率)
+
+  同样以Compound DAI为例子，上述算出借款年利率 = 12.46%，使用率=62.13%，保留利率 = 5%
+  放贷年利率 ≈ 12.46% x 62.13% x (1 – 5%) = 12.46% x 0.6213 x 0.95 = 7.3543281%
+
+
+
+标的资产（Underlying Token）：
+  即借贷资产，比如 ETH、USDT、USDC、WBTC 等，目前 Compound 只开设了 14 种标的资产。
+  cToken：也称为生息代币，是用户在 Compound 上存入资产的凭证。每一种标的资产都有对应的一种 cToken，比如，ETH 对应 cETH，USDT 对应 cUSDT，当用户向 Compound 存入 ETH 则会返回 cETH。取款时就可以用 cToken 换回标的资产。
+
+兑换率（Exchange Rate）：
+  cToken 与标的资产的兑换比例，比如 cETH 的兑换率为 0.02，即 1 个 cETH 可以兑换 0.02 个 ETH。
+  兑换率会随着时间推移不断上涨，因此，持有 cToken 就等于不断生息，所以也才叫生息代币。
+  计算公式为：exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply
+
+抵押因子（Collateral Factor）：
+  每种标的资产都有一个抵押因子，代表用户抵押的资产价值对应可得到的借款的比率，即用来衡量可借额度的。取值范围 0-1，当为 0 时，表示该类资产不能作为抵押品去借贷其他资产。一般最高设为 0.75，比如 ETH，假如用户存入了 0.1 个 ETH 并开启作为抵押品，当时的 ETH 价值为 2000 美元，则可借额度为 0.1 * 2000 * 0.75 = 150 美元，可最多借出价值 150 美元的其他资产。
+
+
+
+涉及核心业务的其实可以分为四个模块：
+  1.InterestRateModel：
+    利率模型的抽象合约，JumpRateModelV2、JumpRateModel、WhitePaperInterestRateModel 都是具体的利率模型实现。而 LegacyInterestRateModel 的代码和 InterestRateModel 相比，除了注释有些许不同，并没有其他区别。
+  2.Comptroller：
+    审计合约，封装了全局使用的数据，以及很多业务检验功能。其入口合约为 Unitroller，也是一个代理合约。
+  3.PriceOracle：
+    价格预言机合约，用来获取资产价格的。
+  4.CToken：
+    cToken 代币的核心逻辑实现都在该合约中，属于抽象基类合约，没有构造函数，且定义了 3 个抽象函数。CEther 是 cETH 代币的入口合约，直接继承自 CToken。而 ERC20 的 cToken 入口则是 CErc20Delegator，这是一个代理合约，而实际实现合约为 CErc20Delegate 或 CCompLikeDelegate、CDaiDelegate 等。
+
+
+
+直线型
+  具体的利率模型实现有好几个，WhitePaperInterestRateModel 是最简单的一种实现.
+
+  资金使用率 = 总借款 / (资金池余额 + 总借款 - 储备金)
+  utilizationRate = borrows / (cash + borrows - reserves)
+  
+  存款利率 = 资金使用率 * 借款利率 *（1 - 储备金率）
+  supplyRate = utilizationRate * borrowRate * (1 - reserveFactor)
+
+
+拐点型
+  拐点型主要有过两个版本的实现，JumpRateModel 和 JumpRateModelV2，目前，曾经使用 JumpRateModel 的都已经升级为 JumpRateModelV2.
+
+  资金使用率没超过拐点值时，利率公式和直线型的一样：
+    y = k*x + b
+  而超过拐点之后，则利率公式将变成：
+    y = k2*(x - p) + (k*p + b)
+
+
+https://learnblockchain.cn/people/96
+简而言之，ETH 的 cToken 交互入口是 CEther 合约，仅此一份；而 ERC20 的 cToken 交互入口则是 CErc20Delegator 合约，每种 ERC20 资产都各有一份入口合约。
+
+

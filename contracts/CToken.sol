@@ -235,7 +235,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             //If there are no tokens minted:exchangeRate = initialExchangeRate
             return initialExchangeRateMantissa;
         } else {
-            // 汇率 = (现存标的资产+借出去的标的资产+标的资产准备金) / ctoken总量
+            // 汇率 = (现存标的资产+借出去的标的资产-保留金标的资产) / ctoken总量
             // exchangeRate = (totalCash + totalBorrows - totalReserves) / totalSupply
             uint totalCash = getCashPrior(); 
             uint cashPlusBorrowsMinusReserves = totalCash + totalBorrows - totalReserves;
@@ -254,10 +254,9 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return getCashPrior();
     }
 
-    /**
-     * @notice Applies accrued interest to total borrows and reserves
-     * @dev This calculates interest accrued from the last checkpointed block
-     *   up to the current block and writes new checkpoint to storage.
+    /*
+        将应计利息应用于借款和准备金总额
+        这将计算从最后一个检查点块累积的利息到当前块，并将新的检查点写入存储。
      */
     function accrueInterest() virtual override public returns (uint) {
         /* Remember the initial block number */
@@ -269,21 +268,21 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             return NO_ERROR;
         }
 
-        /* Read the previous values out of storage */
+        // 从存储器中读出前面的值
         uint cashPrior = getCashPrior();
         uint borrowsPrior = totalBorrows;
         uint reservesPrior = totalReserves;
         uint borrowIndexPrior = borrowIndex;
 
-        /* Calculate the current borrow interest rate */
+        /* 计算当前借款利率 */
         uint borrowRateMantissa = interestRateModel.getBorrowRate(cashPrior, borrowsPrior, reservesPrior);
         require(borrowRateMantissa <= borrowRateMaxMantissa, "borrow rate is absurdly high");
 
-        /* Calculate the number of blocks elapsed since the last accrual */
+        /* 计算自上次应计以来已经过的块数 */
         uint blockDelta = currentBlockNumber - accrualBlockNumberPrior;
 
         /*
-         * Calculate the interest accumulated into borrows and reserves and the new index:
+         * 计算借款和储备中累积的利息和新指数:
          *  simpleInterestFactor = borrowRate * blockDelta
          *  interestAccumulated = simpleInterestFactor * totalBorrows
          *  totalBorrowsNew = interestAccumulated + totalBorrows
