@@ -164,3 +164,31 @@ https://learnblockchain.cn/people/96
 简而言之，ETH 的 cToken 交互入口是 CEther 合约，仅此一份；而 ERC20 的 cToken 交互入口则是 CErc20Delegator 合约，每种 ERC20 资产都各有一份入口合约。
 
 
+存取借款等核心业务的入口函数则主要有以下几个：
+    mint：存款，之所以叫 mint，是因为该操作会新增 cToken 数量，即 totalSupply 增加了，就等于挖矿了 cToken。该操作会将用户的标的资产转入 cToken 合约中（数据会存储在代理合约中），并根据最新的兑换率将对应的 cToken 代币转到用户钱包地址。
+    redeem：赎回存款，即用 cToken 换回标的资产，会根据最新的兑换率计算能换回多少标的资产。
+    redeemUnderlying：同样是赎回存款的函数，与上一个函数不同的是，该函数指定的是标的资产的数量，会根据兑换率算出需要扣减多少 cToken。
+    borrow：借款，会根据用户的抵押物来计算可借额度，借款成功则将所借资产从资金池中直接转到用户钱包地址。
+    repayBorrow：还款，当指定还款金额为 -1 时，则表示全额还款，包括所有利息，否则，则会存在利息没还尽的可能，因为每过一个区块就会产生新的利息。
+    repayBorrowBehalf：代还款，即支付人帮借款人还款。
+    liquidateBorrow：清算，任何人都可以调用此函数来担任清算人，直接借款人、还款金额和清算的 cToken 资产，清算时，清算人帮借款人代还款，并得到借款人所抵押的等值+清算奖励的 cToken 资产。
+
+以上，每一步操作发生时，都会调用 accrueInterest() 函数计算新的利息。该函数的实现逻辑主要如下：
+
+  -获取当前区块 crrentBlockNumber 和最近一次计算的区块 accrualBlockNumberPrior，如果两个区块相等，表示当前区块已经计算过利息，无需再计算，直接返回。
+  -获取保存的 cash（资金池余额）、totalBorrows（总借款）、totalReserves（总储备金）、borrowIndex（借款指数）。
+  -调用 interestRateModel.getBorrowRate() 得到借款利率 borrowRate。
+  -如果 borrowRate 超过最大的借款利率，则错误退出，否则进入下一步。
+  -计算当前区块和 accrualBlockNumberPrior 之间的区块数 blockDelta，该区块数即是还未计算利息的区块区间。
+  -根据以下公式计算出新累积的利息和一些新值：
+    simpleInterestFactor = borrowRate * blockDelta，区块区间内的单位利息
+    interestAccumulated = simpleInterestFactor * totalBorrows，表示总借款在该区块区间内产生的总利息
+    totalBorrowsNew = interestAccumulated + totalBorrows，将总利息累加到总借款中
+    totalReservesNew = interestAccumulated * reserveFactor + totalReserves，根据储备金率将部分利息累加到储备金中
+    borrowIndexNew = simpleInterestFactor * borrowIndex + borrowIndex，累加借款指数
+
+  更新以下值：
+    accrualBlockNumber = currentBlockNumber
+    borrowIndex = borrowIndexNew
+    totalBorrows = totalBorrowsNew
+    totalReserves = totalReservesNew
