@@ -312,10 +312,10 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return NO_ERROR;
     }
 
-    /**
-     * @notice Sender supplies assets into the market and receives cTokens in exchange
-     * @dev Accrues interest whether or not the operation succeeds, unless reverted
-     * @param mintAmount The amount of the underlying asset to supply
+    /*
+        发送方向市场提供资产，并接收ctoken作为交换
+        * @dev无论操作是否成功，除非被还原，都会产生利息
+        * @param mintAmount提供的标的资产的数量
      */
     function mintInternal(uint mintAmount) internal nonReentrant {
         accrueInterest();
@@ -323,158 +323,85 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         mintFresh(msg.sender, mintAmount);
     }
 
-    /**
-     * @notice User supplies assets into the market and receives cTokens in exchange
-     * @dev Assumes interest has already been accrued up to the current block
-     * @param minter The address of the account which is supplying the assets
-     * @param mintAmount The amount of the underlying asset to supply
+    /*
+        * @notice 用户向市场提供资产并接收ctoken作为交换
+        * @dev假设利息已经累积到当前块
+        * @param minter提供资产的帐户地址
+        * @param mintAmount提供的标的资产的数量
      */
     function mintFresh(address minter, uint mintAmount) internal {
-        /* Fail if mint not allowed */
+
         uint allowed = comptroller.mintAllowed(address(this), minter, mintAmount);
         if (allowed != 0) {
             revert MintComptrollerRejection(allowed);
         }
-
-        /* Verify market's block number equals current block number */
         if (accrualBlockNumber != getBlockNumber()) {
             revert MintFreshnessCheck();
         }
 
         Exp memory exchangeRate = Exp({mantissa: exchangeRateStoredInternal()});
-
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
-
-        /*
-         *  We call `doTransferIn` for the minter and the mintAmount.
-         *  Note: The cToken must handle variations between ERC-20 and ETH underlying.
-         *  `doTransferIn` reverts if anything goes wrong, since we can't be sure if
-         *  side-effects occurred. The function returns the amount actually transferred,
-         *  in case of a fee. On success, the cToken holds an additional `actualMintAmount`
-         *  of cash.
-         */
+        //函数返回实际转移的金额
         uint actualMintAmount = doTransferIn(minter, mintAmount);
-
-        /*
-         * We get the current exchange rate and calculate the number of cTokens to be minted:
-         *  mintTokens = actualMintAmount / exchangeRate
-         */
-
+        //我们得到当前的汇率并计算要铸造的ctoken的数量: mintTokens = actualMintAmount / exchangeRate
         uint mintTokens = div_(actualMintAmount, exchangeRate);
 
-        /*
-         * We calculate the new total supply of cTokens and minter token balance, checking for overflow:
-         *  totalSupplyNew = totalSupply + mintTokens
-         *  accountTokensNew = accountTokens[minter] + mintTokens
-         * And write them into storage
-         */
+
         totalSupply = totalSupply + mintTokens;
         accountTokens[minter] = accountTokens[minter] + mintTokens;
 
-        /* We emit a Mint event, and a Transfer event */
         emit Mint(minter, actualMintAmount, mintTokens);
         emit Transfer(address(this), minter, mintTokens);
-
-        /* We call the defense hook */
-        // unused function
-        // comptroller.mintVerify(address(this), minter, actualMintAmount, mintTokens);
     }
 
-    /**
-     * @notice Sender redeems cTokens in exchange for the underlying asset
-     * @dev Accrues interest whether or not the operation succeeds, unless reverted
-     * @param redeemTokens The number of cTokens to redeem into underlying
-     */
+    //赎回
     function redeemInternal(uint redeemTokens) internal nonReentrant {
         accrueInterest();
-        // redeemFresh emits redeem-specific logs on errors, so we don't need to
         redeemFresh(payable(msg.sender), redeemTokens, 0);
     }
 
-    /**
-     * @notice Sender redeems cTokens in exchange for a specified amount of underlying asset
-     * @dev Accrues interest whether or not the operation succeeds, unless reverted
-     * @param redeemAmount The amount of underlying to receive from redeeming cTokens
-     */
+    //赎回
     function redeemUnderlyingInternal(uint redeemAmount) internal nonReentrant {
         accrueInterest();
-        // redeemFresh emits redeem-specific logs on errors, so we don't need to
         redeemFresh(payable(msg.sender), 0, redeemAmount);
     }
 
-    /**
-     * @notice User redeems cTokens in exchange for the underlying asset
-     * @dev Assumes interest has already been accrued up to the current block
-     * @param redeemer The address of the account which is redeeming the tokens
-     * @param redeemTokensIn The number of cTokens to redeem into underlying (only one of redeemTokensIn or redeemAmountIn may be non-zero)
-     * @param redeemAmountIn The number of underlying tokens to receive from redeeming cTokens (only one of redeemTokensIn or redeemAmountIn may be non-zero)
-     */
+    //赎回
     function redeemFresh(address payable redeemer, uint redeemTokensIn, uint redeemAmountIn) internal {
         require(redeemTokensIn == 0 || redeemAmountIn == 0, "one of redeemTokensIn or redeemAmountIn must be zero");
 
-        /* exchangeRate = invoke Exchange Rate Stored() */
+        /* 兑换率 */
         Exp memory exchangeRate = Exp({mantissa: exchangeRateStoredInternal() });
 
         uint redeemTokens;
         uint redeemAmount;
-        /* If redeemTokensIn > 0: */
         if (redeemTokensIn > 0) {
-            /*
-             * We calculate the exchange rate and the amount of underlying to be redeemed:
-             *  redeemTokens = redeemTokensIn
-             *  redeemAmount = redeemTokensIn x exchangeRateCurrent
-             */
+            //redeemTokens = redeemTokensIn
+            //redeemAmount = redeemTokensIn x exchangeRateCurrent
             redeemTokens = redeemTokensIn;
             redeemAmount = mul_ScalarTruncate(exchangeRate, redeemTokensIn);
         } else {
-            /*
-             * We get the current exchange rate and calculate the amount to be redeemed:
-             *  redeemTokens = redeemAmountIn / exchangeRate
-             *  redeemAmount = redeemAmountIn
-             */
+            //redeemTokens = redeemAmountIn / exchangeRate
+            //redeemAmount = redeemAmountIn
             redeemTokens = div_(redeemAmountIn, exchangeRate);
             redeemAmount = redeemAmountIn;
         }
 
-        /* Fail if redeem not allowed */
         uint allowed = comptroller.redeemAllowed(address(this), redeemer, redeemTokens);
         if (allowed != 0) {
             revert RedeemComptrollerRejection(allowed);
         }
-
-        /* Verify market's block number equals current block number */
         if (accrualBlockNumber != getBlockNumber()) {
             revert RedeemFreshnessCheck();
         }
-
-        /* Fail gracefully if protocol has insufficient cash */
         if (getCashPrior() < redeemAmount) {
             revert RedeemTransferOutNotPossible();
         }
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
-
-
-        /*
-         * We write the previously calculated values into storage.
-         *  Note: Avoid token reentrancy attacks by writing reduced supply before external transfer.
-         */
         totalSupply = totalSupply - redeemTokens;
         accountTokens[redeemer] = accountTokens[redeemer] - redeemTokens;
 
-        /*
-         * We invoke doTransferOut for the redeemer and the redeemAmount.
-         *  Note: The cToken must handle variations between ERC-20 and ETH underlying.
-         *  On success, the cToken has redeemAmount less of cash.
-         *  doTransferOut reverts if anything goes wrong, since we can't be sure if side effects occurred.
-         */
         doTransferOut(redeemer, redeemAmount);
 
-        /* We emit a Transfer event, and a Redeem event */
         emit Transfer(redeemer, address(this), redeemTokens);
         emit Redeem(redeemer, redeemAmount, redeemTokens);
 
@@ -482,155 +409,78 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         comptroller.redeemVerify(address(this), redeemer, redeemAmount, redeemTokens);
     }
 
-    /**
-      * @notice Sender borrows assets from the protocol to their own address
-      * @param borrowAmount The amount of the underlying asset to borrow
-      */
+    // 借款
     function borrowInternal(uint borrowAmount) internal nonReentrant {
         accrueInterest();
-        // borrowFresh emits borrow-specific logs on errors, so we don't need to
         borrowFresh(payable(msg.sender), borrowAmount);
     }
 
-    /**
-      * @notice Users borrow assets from the protocol to their own address
-      * @param borrowAmount The amount of the underlying asset to borrow
-      */
     function borrowFresh(address payable borrower, uint borrowAmount) internal {
-        /* Fail if borrow not allowed */
         uint allowed = comptroller.borrowAllowed(address(this), borrower, borrowAmount);
         if (allowed != 0) {
             revert BorrowComptrollerRejection(allowed);
         }
-
-        /* Verify market's block number equals current block number */
         if (accrualBlockNumber != getBlockNumber()) {
             revert BorrowFreshnessCheck();
         }
-
-        /* Fail gracefully if protocol has insufficient underlying cash */
         if (getCashPrior() < borrowAmount) {
             revert BorrowCashNotAvailable();
         }
 
-        /*
-         * We calculate the new borrower and total borrow balances, failing on overflow:
-         *  accountBorrowNew = accountBorrow + borrowAmount
-         *  totalBorrowsNew = totalBorrows + borrowAmount
-         */
+        //这里没有借款金额超标判断，在comptroller里
         uint accountBorrowsPrev = borrowBalanceStoredInternal(borrower);
         uint accountBorrowsNew = accountBorrowsPrev + borrowAmount;
         uint totalBorrowsNew = totalBorrows + borrowAmount;
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
 
-        /*
-         * We write the previously calculated values into storage.
-         *  Note: Avoid token reentrancy attacks by writing increased borrow before external transfer.
-        `*/
         accountBorrows[borrower].principal = accountBorrowsNew;
         accountBorrows[borrower].interestIndex = borrowIndex;
         totalBorrows = totalBorrowsNew;
 
-        /*
-         * We invoke doTransferOut for the borrower and the borrowAmount.
-         *  Note: The cToken must handle variations between ERC-20 and ETH underlying.
-         *  On success, the cToken borrowAmount less of cash.
-         *  doTransferOut reverts if anything goes wrong, since we can't be sure if side effects occurred.
-         */
         doTransferOut(borrower, borrowAmount);
-
-        /* We emit a Borrow event */
         emit Borrow(borrower, borrowAmount, accountBorrowsNew, totalBorrowsNew);
     }
 
-    /**
-     * @notice Sender repays their own borrow
-     * @param repayAmount The amount to repay, or -1 for the full outstanding amount
-     */
+    //还款
     function repayBorrowInternal(uint repayAmount) internal nonReentrant {
         accrueInterest();
-        // repayBorrowFresh emits repay-borrow-specific logs on errors, so we don't need to
         repayBorrowFresh(msg.sender, msg.sender, repayAmount);
     }
 
-    /**
-     * @notice Sender repays a borrow belonging to borrower
-     * @param borrower the account with the debt being payed off
-     * @param repayAmount The amount to repay, or -1 for the full outstanding amount
-     */
+    //代还款，即支付人帮借款人还款。
     function repayBorrowBehalfInternal(address borrower, uint repayAmount) internal nonReentrant {
         accrueInterest();
-        // repayBorrowFresh emits repay-borrow-specific logs on errors, so we don't need to
         repayBorrowFresh(msg.sender, borrower, repayAmount);
     }
 
-    /**
-     * @notice Borrows are repaid by another user (possibly the borrower).
-     * @param payer the account paying off the borrow
-     * @param borrower the account with the debt being payed off
-     * @param repayAmount the amount of underlying tokens being returned, or -1 for the full outstanding amount
-     * @return (uint) the actual repayment amount.
-     */
+    //还款
     function repayBorrowFresh(address payer, address borrower, uint repayAmount) internal returns (uint) {
-        /* Fail if repayBorrow not allowed */
         uint allowed = comptroller.repayBorrowAllowed(address(this), payer, borrower, repayAmount);
         if (allowed != 0) {
             revert RepayBorrowComptrollerRejection(allowed);
         }
-
-        /* Verify market's block number equals current block number */
         if (accrualBlockNumber != getBlockNumber()) {
             revert RepayBorrowFreshnessCheck();
         }
 
-        /* We fetch the amount the borrower owes, with accumulated interest */
+        /* 我们收回借款人所欠的金额，包括累计利息 */
         uint accountBorrowsPrev = borrowBalanceStoredInternal(borrower);
-
-        /* If repayAmount == -1, repayAmount = accountBorrows */
         uint repayAmountFinal = repayAmount == type(uint).max ? accountBorrowsPrev : repayAmount;
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
 
-        /*
-         * We call doTransferIn for the payer and the repayAmount
-         *  Note: The cToken must handle variations between ERC-20 and ETH underlying.
-         *  On success, the cToken holds an additional repayAmount of cash.
-         *  doTransferIn reverts if anything goes wrong, since we can't be sure if side effects occurred.
-         *   it returns the amount actually transferred, in case of a fee.
-         */
         uint actualRepayAmount = doTransferIn(payer, repayAmountFinal);
-
-        /*
-         * We calculate the new borrower and total borrow balances, failing on underflow:
-         *  accountBorrowsNew = accountBorrows - actualRepayAmount
-         *  totalBorrowsNew = totalBorrows - actualRepayAmount
-         */
         uint accountBorrowsNew = accountBorrowsPrev - actualRepayAmount;
         uint totalBorrowsNew = totalBorrows - actualRepayAmount;
 
-        /* We write the previously calculated values into storage */
         accountBorrows[borrower].principal = accountBorrowsNew;
         accountBorrows[borrower].interestIndex = borrowIndex;
         totalBorrows = totalBorrowsNew;
 
-        /* We emit a RepayBorrow event */
         emit RepayBorrow(payer, borrower, actualRepayAmount, accountBorrowsNew, totalBorrowsNew);
-
         return actualRepayAmount;
     }
 
-    /**
-     * @notice The sender liquidates the borrowers collateral.
-     *  The collateral seized is transferred to the liquidator.
-     * @param borrower The borrower of this cToken to be liquidated
-     * @param cTokenCollateral The market in which to seize collateral from the borrower
-     * @param repayAmount The amount of the underlying borrowed asset to repay
-     */
+    //清算
     function liquidateBorrowInternal(address borrower, uint repayAmount, CTokenInterface cTokenCollateral) internal nonReentrant {
         accrueInterest();
 
