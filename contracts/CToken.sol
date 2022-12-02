@@ -483,7 +483,6 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
     //清算
     function liquidateBorrowInternal(address borrower, uint repayAmount, CTokenInterface cTokenCollateral) internal nonReentrant {
         accrueInterest();
-
         uint error = cTokenCollateral.accrueInterest();
         if (error != NO_ERROR) {
             // accrueInterest emits logs on errors, but we still want to log the fact that an attempted liquidation failed
@@ -494,22 +493,17 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         liquidateBorrowFresh(msg.sender, borrower, repayAmount, cTokenCollateral);
     }
 
+
     /**
-     * @notice The liquidator liquidates the borrowers collateral.
-     *  The collateral seized is transferred to the liquidator.
-     * @param borrower The borrower of this cToken to be liquidated
-     * @param liquidator The address repaying the borrow and seizing collateral
      * @param cTokenCollateral The market in which to seize collateral from the borrower
-     * @param repayAmount The amount of the underlying borrowed asset to repay
      */
+    //清盘人清算借款人的抵押品。扣押的抵押品转移给清盘人
+    //CTokenInterface:是清算者获得的ctoken
     function liquidateBorrowFresh(address liquidator, address borrower, uint repayAmount, CTokenInterface cTokenCollateral) internal {
-        /* Fail if liquidate not allowed */
         uint allowed = comptroller.liquidateBorrowAllowed(address(this), address(cTokenCollateral), liquidator, borrower, repayAmount);
         if (allowed != 0) {
             revert LiquidateComptrollerRejection(allowed);
         }
-
-        /* Verify market's block number equals current block number */
         if (accrualBlockNumber != getBlockNumber()) {
             revert LiquidateFreshnessCheck();
         }
@@ -519,78 +513,52 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             revert LiquidateCollateralFreshnessCheck();
         }
 
-        /* Fail if borrower = liquidator */
         if (borrower == liquidator) {
             revert LiquidateLiquidatorIsBorrower();
         }
-
-        /* Fail if repayAmount = 0 */
         if (repayAmount == 0) {
             revert LiquidateCloseAmountIsZero();
         }
-
-        /* Fail if repayAmount = -1 */
         if (repayAmount == type(uint).max) {
             revert LiquidateCloseAmountIsUintMax();
         }
 
         /* Fail if repayBorrow fails */
+        //还款
         uint actualRepayAmount = repayBorrowFresh(liquidator, borrower, repayAmount);
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
-
-        /* We calculate the number of collateral tokens that will be seized */
+        // 我们计算将被查封的抵押品ctoken的数量
+        // seizeTokens 是要转移给清算者的ctoken
         (uint amountSeizeError, uint seizeTokens) = comptroller.liquidateCalculateSeizeTokens(address(this), address(cTokenCollateral), actualRepayAmount);
         require(amountSeizeError == NO_ERROR, "LIQUIDATE_COMPTROLLER_CALCULATE_AMOUNT_SEIZE_FAILED");
-
-        /* Revert if borrower collateral token balance < seizeTokens */
         require(cTokenCollateral.balanceOf(borrower) >= seizeTokens, "LIQUIDATE_SEIZE_TOO_MUCH");
 
-        // If this is also the collateral, run seizeInternal to avoid re-entrancy, otherwise make an external call
+
+        // cTokenCollateral 也可以本ctoken，只要借款人有足够数量
         if (address(cTokenCollateral) == address(this)) {
             seizeInternal(address(this), liquidator, borrower, seizeTokens);
         } else {
             require(cTokenCollateral.seize(liquidator, borrower, seizeTokens) == NO_ERROR, "token seizure failed");
         }
 
-        /* We emit a LiquidateBorrow event */
         emit LiquidateBorrow(liquidator, borrower, actualRepayAmount, address(cTokenCollateral), seizeTokens);
     }
 
-    /**
-     * @notice Transfers collateral tokens (this market) to the liquidator.
-     * @dev Will fail unless called by another cToken during the process of liquidation.
-     *  Its absolutely critical to use msg.sender as the borrowed cToken and not a parameter.
-     * @param liquidator The account receiving seized collateral
-     * @param borrower The account having collateral seized
-     * @param seizeTokens The number of cTokens to seize
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
+    // 将抵押品代币(该市场)转移到清算人。
+    // seizeTokens 要捕获的ctoken数量
     function seize(address liquidator, address borrower, uint seizeTokens) override external nonReentrant returns (uint) {
         seizeInternal(msg.sender, liquidator, borrower, seizeTokens);
 
         return NO_ERROR;
     }
 
-    /**
-     * @notice Transfers collateral tokens (this market) to the liquidator.
-     * @dev Called only during an in-kind liquidation, or by liquidateBorrow during the liquidation of another CToken.
-     *  Its absolutely critical to use msg.sender as the seizer cToken and not a parameter.
-     * @param seizerToken The contract seizing the collateral (i.e. borrowed cToken)
-     * @param liquidator The account receiving seized collateral
-     * @param borrower The account having collateral seized
-     * @param seizeTokens The number of cTokens to seize
-     */
+    // 将抵押品代币(该市场)转移到清算人。
+    // seizeTokens 要捕获的ctoken数量
     function seizeInternal(address seizerToken, address liquidator, address borrower, uint seizeTokens) internal {
-        /* Fail if seize not allowed */
         uint allowed = comptroller.seizeAllowed(address(this), seizerToken, liquidator, borrower, seizeTokens);
         if (allowed != 0) {
             revert LiquidateSeizeComptrollerRejection(allowed);
         }
-
-        /* Fail if borrower = liquidator */
         if (borrower == liquidator) {
             revert LiquidateSeizeLiquidatorIsBorrower();
         }
@@ -856,33 +824,20 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return NO_ERROR;
     }
 
-    /**
-     * @notice accrues interest and updates the interest rate model using _setInterestRateModelFresh
-     * @dev Admin function to accrue interest and update the interest rate model
-     * @param newInterestRateModel the new interest rate model to use
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
+     // 更新利率模型(*要求新的利息应计)
     function _setInterestRateModel(InterestRateModel newInterestRateModel) override public returns (uint) {
         accrueInterest();
         // _setInterestRateModelFresh emits interest-rate-model-update-specific logs on errors, so we don't need to.
         return _setInterestRateModelFresh(newInterestRateModel);
     }
 
-    /**
-     * @notice updates the interest rate model (*requires fresh interest accrual)
-     * @dev Admin function to update the interest rate model
-     * @param newInterestRateModel the new interest rate model to use
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
-     // 通知更新利率模型(*要求新的利息应计)
+     // 更新利率模型(*要求新的利息应计)
     function _setInterestRateModelFresh(InterestRateModel newInterestRateModel) internal returns (uint) {
 
         InterestRateModel oldInterestRateModel;
         if (msg.sender != admin) {
             revert SetInterestRateModelOwnerCheck();
         }
-
-        // We fail gracefully unless market's block number equals current block number
         //要求市场的区块号等于当前区块号，否则我们会失败
         if (accrualBlockNumber != getBlockNumber()) {
             revert SetInterestRateModelFreshCheck();
@@ -891,39 +846,17 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         oldInterestRateModel = interestRateModel;
         require(newInterestRateModel.isInterestRateModel(), "marker method returned false");
         interestRateModel = newInterestRateModel;
-        emit NewMarketInterestRateModel(oldInterestRateModel, newInterestRateModel);
 
+        emit NewMarketInterestRateModel(oldInterestRateModel, newInterestRateModel);
         return NO_ERROR;
     }
 
     /*** Safe Token ***/
 
-    /**
-     * @notice Gets balance of this contract in terms of the underlying
-     * @dev This excludes the value of the current message, if any
-     * @return The quantity of underlying owned by this contract
-     */
     function getCashPrior() virtual internal view returns (uint);
-
-    /**
-     * @dev Performs a transfer in, reverting upon failure. Returns the amount actually transferred to the protocol, in case of a fee.
-     *  This may revert due to insufficient balance or insufficient allowance.
-     */
     function doTransferIn(address from, uint amount) virtual internal returns (uint);
-
-    /**
-     * @dev Performs a transfer out, ideally returning an explanatory error code upon failure rather than reverting.
-     *  If caller has not called checked protocol's balance, may revert due to insufficient cash held in the contract.
-     *  If caller has checked protocol's balance, and verified it is >= amount, this should not revert in normal conditions.
-     */
     function doTransferOut(address payable to, uint amount) virtual internal;
 
-
-    /*** Reentrancy Guard ***/
-
-    /**
-     * @dev Prevents a contract from calling itself, directly or indirectly.
-     */
     modifier nonReentrant() {
         require(_notEntered, "re-entered");
         _notEntered = false;
