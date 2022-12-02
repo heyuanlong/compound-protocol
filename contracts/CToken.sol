@@ -563,11 +563,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             revert LiquidateSeizeLiquidatorIsBorrower();
         }
 
-        /*
-         * We calculate the new borrower and liquidator token balances, failing on underflow/overflow:
-         *  borrowerTokensNew = accountTokens[borrower] - seizeTokens
-         *  liquidatorTokensNew = accountTokens[liquidator] + seizeTokens
-         */
+        // 抽取2.8%作为储备金
         uint protocolSeizeTokens = mul_(seizeTokens, Exp({mantissa: protocolSeizeShareMantissa}));
         uint liquidatorSeizeTokens = seizeTokens - protocolSeizeTokens;
         Exp memory exchangeRate = Exp({mantissa: exchangeRateStoredInternal()});
@@ -575,17 +571,13 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         uint totalReservesNew = totalReserves + protocolSeizeAmount;
 
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
+        totalReserves = totalReservesNew;                   //储备金增加
+        totalSupply = totalSupply - protocolSeizeTokens;    //ctoken总量减少
 
-        /* We write the calculated values into storage */
-        totalReserves = totalReservesNew;
-        totalSupply = totalSupply - protocolSeizeTokens;
+        //ctoken 转移
         accountTokens[borrower] = accountTokens[borrower] - seizeTokens;
         accountTokens[liquidator] = accountTokens[liquidator] + liquidatorSeizeTokens;
 
-        /* Emit a Transfer event */
         emit Transfer(borrower, liquidator, liquidatorSeizeTokens);
         emit Transfer(borrower, address(this), protocolSeizeTokens);
         emit ReservesAdded(address(this), protocolSeizeAmount, totalReservesNew);
@@ -593,63 +585,34 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
 
 
     /*** Admin Functions ***/
-
-    /**
-      * @notice Begins transfer of admin rights. The newPendingAdmin must call `_acceptAdmin` to finalize the transfer.
-      * @dev Admin function to begin change of admin. The newPendingAdmin must call `_acceptAdmin` to finalize the transfer.
-      * @param newPendingAdmin New pending admin.
-      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-      */
     function _setPendingAdmin(address payable newPendingAdmin) override external returns (uint) {
-        // Check caller = admin
         if (msg.sender != admin) {
             revert SetPendingAdminOwnerCheck();
         }
-
-        // Save current value, if any, for inclusion in log
         address oldPendingAdmin = pendingAdmin;
-
-        // Store pendingAdmin with value newPendingAdmin
         pendingAdmin = newPendingAdmin;
 
-        // Emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin)
         emit NewPendingAdmin(oldPendingAdmin, newPendingAdmin);
-
         return NO_ERROR;
     }
 
-    /**
-      * @notice Accepts transfer of admin rights. msg.sender must be pendingAdmin
-      * @dev Admin function for pending admin to accept role and update admin
-      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-      */
     function _acceptAdmin() override external returns (uint) {
-        // Check caller is pendingAdmin and pendingAdmin ≠ address(0)
         if (msg.sender != pendingAdmin || msg.sender == address(0)) {
             revert AcceptAdminPendingAdminCheck();
         }
 
-        // Save current values for inclusion in log
         address oldAdmin = admin;
         address oldPendingAdmin = pendingAdmin;
 
-        // Store admin with value pendingAdmin
         admin = pendingAdmin;
-
-        // Clear the pending value
         pendingAdmin = payable(address(0));
 
         emit NewAdmin(oldAdmin, admin);
         emit NewPendingAdmin(oldPendingAdmin, pendingAdmin);
-
         return NO_ERROR;
     }
 
-    /**
-      * @notice Sets a new comptroller for the market
-      * @dev Admin function to set a new comptroller
-      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-      */
+
       // 设置审计员合约
     function _setComptroller(ComptrollerInterface newComptroller) override public returns (uint) {
         // Check caller is admin
@@ -658,63 +621,41 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         }
 
         ComptrollerInterface oldComptroller = comptroller;
-        // Ensure invoke comptroller.isComptroller() returns true
         require(newComptroller.isComptroller(), "marker method returned false");
 
-        // Set market's comptroller to newComptroller
         comptroller = newComptroller;
 
-        // Emit NewComptroller(oldComptroller, newComptroller)
         emit NewComptroller(oldComptroller, newComptroller);
-
         return NO_ERROR;
     }
 
-    /**
-      * @notice accrues interest and sets a new reserve factor for the protocol using _setReserveFactorFresh
-      * @dev Admin function to accrue interest and set a new reserve factor
-      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-      */
+    //更新储备金率
     function _setReserveFactor(uint newReserveFactorMantissa) override external nonReentrant returns (uint) {
         accrueInterest();
         // _setReserveFactorFresh emits reserve-factor-specific logs on errors, so we don't need to.
         return _setReserveFactorFresh(newReserveFactorMantissa);
     }
 
-    /**
-      * @notice Sets a new reserve factor for the protocol (*requires fresh interest accrual)
-      * @dev Admin function to set a new reserve factor
-      * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-      */
+    //更新储备金率
     function _setReserveFactorFresh(uint newReserveFactorMantissa) internal returns (uint) {
-        // Check caller is admin
         if (msg.sender != admin) {
             revert SetReserveFactorAdminCheck();
         }
-
-        // Verify market's block number equals current block number
         if (accrualBlockNumber != getBlockNumber()) {
             revert SetReserveFactorFreshCheck();
         }
 
-        // Check newReserveFactor ≤ maxReserveFactor
         if (newReserveFactorMantissa > reserveFactorMaxMantissa) {
             revert SetReserveFactorBoundsCheck();
         }
-
         uint oldReserveFactorMantissa = reserveFactorMantissa;
         reserveFactorMantissa = newReserveFactorMantissa;
 
         emit NewReserveFactor(oldReserveFactorMantissa, newReserveFactorMantissa);
-
         return NO_ERROR;
     }
 
-    /**
-     * @notice Accrues interest and reduces reserves by transferring from msg.sender
-     * @param addAmount Amount of addition to reserves
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
+    //增加储备金
     function _addReservesInternal(uint addAmount) internal nonReentrant returns (uint) {
         accrueInterest();
 
@@ -723,104 +664,56 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
         return NO_ERROR;
     }
 
-    /**
-     * @notice Add reserves by transferring from caller
-     * @dev Requires fresh interest accrual
-     * @param addAmount Amount of addition to reserves
-     * @return (uint, uint) An error code (0=success, otherwise a failure (see ErrorReporter.sol for details)) and the actual amount added, net token fees
-     */
+    //增加储备金
     function _addReservesFresh(uint addAmount) internal returns (uint, uint) {
         // totalReserves + actualAddAmount
         uint totalReservesNew;
         uint actualAddAmount;
 
-        // We fail gracefully unless market's block number equals current block number
         if (accrualBlockNumber != getBlockNumber()) {
             revert AddReservesFactorFreshCheck(actualAddAmount);
         }
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
-
-        /*
-         * We call doTransferIn for the caller and the addAmount
-         *  Note: The cToken must handle variations between ERC-20 and ETH underlying.
-         *  On success, the cToken holds an additional addAmount of cash.
-         *  doTransferIn reverts if anything goes wrong, since we can't be sure if side effects occurred.
-         *  it returns the amount actually transferred, in case of a fee.
-         */
-
         actualAddAmount = doTransferIn(msg.sender, addAmount);
-
         totalReservesNew = totalReserves + actualAddAmount;
-
-        // Store reserves[n+1] = reserves[n] + actualAddAmount
         totalReserves = totalReservesNew;
 
-        /* Emit NewReserves(admin, actualAddAmount, reserves[n+1]) */
         emit ReservesAdded(msg.sender, actualAddAmount, totalReservesNew);
-
-        /* Return (NO_ERROR, actualAddAmount) */
         return (NO_ERROR, actualAddAmount);
     }
 
 
-    /**
-     * @notice Accrues interest and reduces reserves by transferring to admin
-     * @param reduceAmount Amount of reduction to reserves
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
+    //减少储备金
     function _reduceReserves(uint reduceAmount) override external nonReentrant returns (uint) {
         accrueInterest();
         // _reduceReservesFresh emits reserve-reduction-specific logs on errors, so we don't need to.
         return _reduceReservesFresh(reduceAmount);
     }
 
-    /**
-     * @notice Reduces reserves by transferring to admin
-     * @dev Requires fresh interest accrual
-     * @param reduceAmount Amount of reduction to reserves
-     * @return uint 0=success, otherwise a failure (see ErrorReporter.sol for details)
-     */
+    //减少储备金
     function _reduceReservesFresh(uint reduceAmount) internal returns (uint) {
         // totalReserves - reduceAmount
         uint totalReservesNew;
 
-        // Check caller is admin
         if (msg.sender != admin) {
             revert ReduceReservesAdminCheck();
         }
-
-        // We fail gracefully unless market's block number equals current block number
         if (accrualBlockNumber != getBlockNumber()) {
             revert ReduceReservesFreshCheck();
         }
 
-        // Fail gracefully if protocol has insufficient underlying cash
         if (getCashPrior() < reduceAmount) {
             revert ReduceReservesCashNotAvailable();
         }
-
-        // Check reduceAmount ≤ reserves[n] (totalReserves)
         if (reduceAmount > totalReserves) {
             revert ReduceReservesCashValidation();
         }
 
-        /////////////////////////
-        // EFFECTS & INTERACTIONS
-        // (No safe failures beyond this point)
-
         totalReservesNew = totalReserves - reduceAmount;
-
-        // Store reserves[n+1] = reserves[n] - reduceAmount
         totalReserves = totalReservesNew;
-
-        // doTransferOut reverts if anything goes wrong, since we can't be sure if side effects occurred.
         doTransferOut(admin, reduceAmount);
 
         emit ReservesReduced(admin, reduceAmount, totalReservesNew);
-
         return NO_ERROR;
     }
 
