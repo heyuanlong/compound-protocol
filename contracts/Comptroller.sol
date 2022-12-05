@@ -91,33 +91,18 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
     }
 
     /*** Assets You Are In ***/
-
-    /**
-     * @notice Returns the assets an account has entered
-     * @param account The address of the account to pull assets for
-     * @return A dynamic list with the assets the account has entered
-     */
     function getAssetsIn(address account) external view returns (CToken[] memory) {
         CToken[] memory assetsIn = accountAssets[account];
 
         return assetsIn;
     }
 
-    /**
-     * @notice Returns whether the given account is entered in the given asset
-     * @param account The address of the account to check
-     * @param cToken The cToken to check
-     * @return True if the account is in the asset, otherwise false.
-     */
+    //返回给定的资产中是否输入了给定的帐户
     function checkMembership(address account, CToken cToken) external view returns (bool) {
         return markets[address(cToken)].accountMembership[account];
     }
 
-    /**
-     * @notice Add assets to be included in account liquidity calculation
-     * @param cTokens The list of addresses of the cToken markets to be enabled
-     * @return Success indicator for whether each corresponding market was entered
-     */
+    //增加要计入账户流动性计算的资产
     function enterMarkets(address[] memory cTokens) override public returns (uint[] memory) {
         uint len = cTokens.length;
 
@@ -131,70 +116,48 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return results;
     }
 
-    /**
-     * @notice Add the market to the borrower's "assets in" for liquidity calculations
-     * @param cToken The market to enter
-     * @param borrower The address of the account to modify
-     * @return Success indicator for whether the market was entered
-     */
+    //Add the market to the borrower's "assets in" for liquidity calculations
     function addToMarketInternal(CToken cToken, address borrower) internal returns (Error) {
         Market storage marketToJoin = markets[address(cToken)];
 
         if (!marketToJoin.isListed) {
-            // market is not listed, cannot join
             return Error.MARKET_NOT_LISTED;
         }
 
         if (marketToJoin.accountMembership[borrower] == true) {
-            // already joined
             return Error.NO_ERROR;
         }
 
-        // survived the gauntlet, add to list
-        // NOTE: we store these somewhat redundantly as a significant optimization
-        //  this avoids having to iterate through the list for the most common use cases
-        //  that is, only when we need to perform liquidity checks
-        //  and not whenever we want to check if an account is in a particular market
         marketToJoin.accountMembership[borrower] = true;
         accountAssets[borrower].push(cToken);
 
         emit MarketEntered(cToken, borrower);
-
         return Error.NO_ERROR;
     }
 
-    /**
-     * @notice Removes asset from sender's account liquidity calculation
-     * @dev Sender must not have an outstanding borrow balance in the asset,
-     *  or be providing necessary collateral for an outstanding borrow.
-     * @param cTokenAddress The address of the asset to be removed
-     * @return Whether or not the account successfully exited the market
-     */
+    //退出market
     function exitMarket(address cTokenAddress) override external returns (uint) {
         CToken cToken = CToken(cTokenAddress);
         /* Get sender tokensHeld and amountOwed underlying from the cToken */
         (uint oErr, uint tokensHeld, uint amountOwed, ) = cToken.getAccountSnapshot(msg.sender);
         require(oErr == 0, "exitMarket: getAccountSnapshot failed"); // semi-opaque error code
 
-        /* Fail if the sender has a borrow balance */
+        /* 该资产有借款*/
         if (amountOwed != 0) {
             return fail(Error.NONZERO_BORROW_BALANCE, FailureInfo.EXIT_MARKET_BALANCE_OWED);
         }
 
-        /* Fail if the sender is not permitted to redeem all of their tokens */
+        /* 是否运行赎回所有质押中的资产 */
         uint allowed = redeemAllowedInternal(cTokenAddress, msg.sender, tokensHeld);
         if (allowed != 0) {
             return failOpaque(Error.REJECTION, FailureInfo.EXIT_MARKET_REJECTION, allowed);
         }
 
         Market storage marketToExit = markets[address(cToken)];
-
-        /* Return true if the sender is not already ‘in’ the market */
         if (!marketToExit.accountMembership[msg.sender]) {
             return uint(Error.NO_ERROR);
         }
 
-        /* Set cToken account membership to false */
         delete marketToExit.accountMembership[msg.sender];
 
         /* Delete cToken from the account’s list of assets */
@@ -208,29 +171,18 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
                 break;
             }
         }
-
-        // We *must* have found the asset in the list or our redundant data structure is broken
         assert(assetIndex < len);
-
-        // copy last item in list to location of item to be removed, reduce length by 1
         CToken[] storage storedList = accountAssets[msg.sender];
         storedList[assetIndex] = storedList[storedList.length - 1];
         storedList.pop();
 
         emit MarketExited(cToken, msg.sender);
-
         return uint(Error.NO_ERROR);
     }
 
     /*** Policy Hooks ***/
 
-    /**
-     * @notice Checks if the account should be allowed to mint tokens in the given market
-     * @param cToken The market to verify the mint against
-     * @param minter The account which would get the minted tokens
-     * @param mintAmount The amount of underlying being supplied to the market in exchange for tokens
-     * @return 0 if the mint is allowed, otherwise a semi-opaque error code (See ErrorReporter.sol)
-     */
+
     function mintAllowed(address cToken, address minter, uint mintAmount) override external returns (uint) {
         // Pausing is a very serious situation - we revert to sound the alarms
         require(!mintGuardianPaused[cToken], "mint is paused");
@@ -250,13 +202,6 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return uint(Error.NO_ERROR);
     }
 
-    /**
-     * @notice Validates mint and reverts on rejection. May emit logs.
-     * @param cToken Asset being minted
-     * @param minter The address minting the tokens
-     * @param actualMintAmount The amount of the underlying asset being minted
-     * @param mintTokens The number of tokens being minted
-     */
     function mintVerify(address cToken, address minter, uint actualMintAmount, uint mintTokens) override external {
         // Shh - currently unused
         cToken;
@@ -270,13 +215,6 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         }
     }
 
-    /**
-     * @notice Checks if the account should be allowed to redeem tokens in the given market
-     * @param cToken The market to verify the redeem against
-     * @param redeemer The account which would redeem the tokens
-     * @param redeemTokens The number of cTokens to exchange for the underlying asset in the market
-     * @return 0 if the redeem is allowed, otherwise a semi-opaque error code (See ErrorReporter.sol)
-     */
     function redeemAllowed(address cToken, address redeemer, uint redeemTokens) override external returns (uint) {
         uint allowed = redeemAllowedInternal(cToken, redeemer, redeemTokens);
         if (allowed != uint(Error.NO_ERROR)) {
@@ -290,17 +228,18 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return uint(Error.NO_ERROR);
     }
 
+    //是否允许赎回
     function redeemAllowedInternal(address cToken, address redeemer, uint redeemTokens) internal view returns (uint) {
         if (!markets[cToken].isListed) {
             return uint(Error.MARKET_NOT_LISTED);
         }
-
         /* If the redeemer is not 'in' the market, then we can bypass the liquidity check */
         if (!markets[cToken].accountMembership[redeemer]) {
             return uint(Error.NO_ERROR);
         }
 
         /* Otherwise, perform a hypothetical liquidity check to guard against shortfall */
+        // 否则，执行一个假设的流动性检查以防止短缺
         (Error err, , uint shortfall) = getHypotheticalAccountLiquidityInternal(redeemer, CToken(cToken), redeemTokens, 0);
         if (err != Error.NO_ERROR) {
             return uint(err);
@@ -312,13 +251,6 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return uint(Error.NO_ERROR);
     }
 
-    /**
-     * @notice Validates redeem and reverts on rejection. May emit logs.
-     * @param cToken Asset being redeemed
-     * @param redeemer The address redeeming the tokens
-     * @param redeemAmount The amount of the underlying asset being redeemed
-     * @param redeemTokens The number of tokens being redeemed
-     */
     function redeemVerify(address cToken, address redeemer, uint redeemAmount, uint redeemTokens) override external {
         // Shh - currently unused
         cToken;
@@ -330,13 +262,7 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         }
     }
 
-    /**
-     * @notice Checks if the account should be allowed to borrow the underlying asset of the given market
-     * @param cToken The market to verify the borrow against
-     * @param borrower The account which would borrow the asset
-     * @param borrowAmount The amount of underlying the account would borrow
-     * @return 0 if the borrow is allowed, otherwise a semi-opaque error code (See ErrorReporter.sol)
-     */
+    //Checks if the account should be allowed to borrow the underlying asset of the given market
     function borrowAllowed(address cToken, address borrower, uint borrowAmount) override external returns (uint) {
         // Pausing is a very serious situation - we revert to sound the alarms
         require(!borrowGuardianPaused[cToken], "borrow is paused");
@@ -347,15 +273,13 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
 
         if (!markets[cToken].accountMembership[borrower]) {
             // only cTokens may call borrowAllowed if borrower not in market
+            // 进入市场
             require(msg.sender == cToken, "sender must be cToken");
-
-            // attempt to add borrower to the market
             Error err = addToMarketInternal(CToken(msg.sender), borrower);
             if (err != Error.NO_ERROR) {
                 return uint(err);
             }
 
-            // it should be impossible to break the important invariant
             assert(markets[cToken].accountMembership[borrower]);
         }
 
@@ -363,15 +287,15 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
             return uint(Error.PRICE_ERROR);
         }
 
-
         uint borrowCap = borrowCaps[cToken];
-        // Borrow cap of 0 corresponds to unlimited borrowing
+        // 不等于0，表示有借款总上限
         if (borrowCap != 0) {
             uint totalBorrows = CToken(cToken).totalBorrows();
             uint nextTotalBorrows = add_(totalBorrows, borrowAmount);
             require(nextTotalBorrows < borrowCap, "market borrow cap reached");
         }
 
+        //检查用户是否有足够的抵押金来借款
         (Error err, , uint shortfall) = getHypotheticalAccountLiquidityInternal(borrower, CToken(cToken), 0, borrowAmount);
         if (err != Error.NO_ERROR) {
             return uint(err);
@@ -388,12 +312,6 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return uint(Error.NO_ERROR);
     }
 
-    /**
-     * @notice Validates borrow and reverts on rejection. May emit logs.
-     * @param cToken Asset whose underlying is being borrowed
-     * @param borrower The address borrowing the underlying
-     * @param borrowAmount The amount of the underlying asset requested to borrow
-     */
     function borrowVerify(address cToken, address borrower, uint borrowAmount) override external {
         // Shh - currently unused
         cToken;
@@ -406,14 +324,7 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         }
     }
 
-    /**
-     * @notice Checks if the account should be allowed to repay a borrow in the given market
-     * @param cToken The market to verify the repay against
-     * @param payer The account which would repay the asset
-     * @param borrower The account which would borrowed the asset
-     * @param repayAmount The amount of the underlying asset the account would repay
-     * @return 0 if the repay is allowed, otherwise a semi-opaque error code (See ErrorReporter.sol)
-     */
+    //是否允许还款
     function repayBorrowAllowed(
         address cToken,
         address payer,
@@ -436,13 +347,6 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         return uint(Error.NO_ERROR);
     }
 
-    /**
-     * @notice Validates repayBorrow and reverts on rejection. May emit logs.
-     * @param cToken Asset being repaid
-     * @param payer The address repaying the borrow
-     * @param borrower The address of the borrower
-     * @param actualRepayAmount The amount of underlying being repaid
-     */
     function repayBorrowVerify(
         address cToken,
         address payer,
@@ -462,14 +366,7 @@ contract Comptroller is ComptrollerV7Storage, ComptrollerInterface, ComptrollerE
         }
     }
 
-    /**
-     * @notice Checks if the liquidation should be allowed to occur
-     * @param cTokenBorrowed Asset which was borrowed by the borrower
-     * @param cTokenCollateral Asset which was used as collateral and will be seized
-     * @param liquidator The address repaying the borrow and seizing the collateral
-     * @param borrower The address of the borrower
-     * @param repayAmount The amount of underlying being repaid
-     */
+    //是否允许清算
     function liquidateBorrowAllowed(
         address cTokenBorrowed,
         address cTokenCollateral,

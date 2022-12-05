@@ -386,6 +386,7 @@ abstract contract CToken is CTokenInterface, ExponentialNoError, TokenErrorRepor
             redeemAmount = redeemAmountIn;
         }
 
+        //是否允许赎回
         uint allowed = comptroller.redeemAllowed(address(this), redeemer, redeemTokens);
         if (allowed != 0) {
             revert RedeemComptrollerRejection(allowed);
